@@ -1,0 +1,429 @@
+// Website Quiz – Fixed Firebase initialization + LocalStorage fallback
+// React + Tailwind + shadcn/ui + Framer Motion
+// Fitur: Login Siswa, Admin Login, Admin Panel Soal, Soal Acak, Timer Per Soal, Leaderboard, Hasil Lengkap
+// Tambahan: Tema Geografi (warna) dan database fallback kalau Firebase belum dikonfigurasi
+
+import { useState, useEffect } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { motion } from "framer-motion";
+
+// ==========================
+//   TEMA GEOGRAFI (WARNA)
+// ==========================
+const geoColors = {
+  primary: "#2c7a7b",   // hijau kebiruan bumi
+  secondary: "#285E61", // warna laut gelap
+  accent: "#68D391"     // hijau cerah vegetasi
+};
+
+// Simple inline style helper untuk menerapkan tema
+const themeStyle = {
+  '--geo-primary': geoColors.primary,
+  '--geo-secondary': geoColors.secondary,
+  '--geo-accent': geoColors.accent
+};
+
+// ==========================
+//   ADMIN PASSWORD (GURU)
+// ==========================
+const ADMIN_PASSWORD = "guruku123"; // Ganti sesuai kebutuhan
+
+// ==========================
+//   DEFAULT BANK SOAL
+// ==========================
+const defaultQuestions = [
+  {
+    question: "Ibu kota Indonesia adalah…",
+    options: ["Bandung", "Jakarta", "Medan", "Surabaya"],
+    answer: 1,
+  },
+  {
+    question: "Gunung tertinggi di Indonesia adalah…",
+    options: ["Semeru", "Rinjani", "Puncak Jaya", "Kerinci"],
+    answer: 2,
+  },
+];
+
+// ==========================
+//   FIREBASE CONFIG (OPTIONAL)
+//   IMPORTANT: replace placeholders with your Firebase project's real values
+// If you don't want to use Firebase, leave as placeholders and the app will
+// automatically fall back to localStorage for persistence.
+// ==========================
+let firebaseAvailable = false;
+let db = null;
+try {
+  // dynamic import to avoid bundler issues if firebase isn't installed/configured
+  // NOTE: in a real project ensure firebase packages are installed and configured
+  // This block attempts to initialize Firebase only when a real config is provided.
+  // If placeholders remain, we will skip initialization and use localStorage fallback.
+  // Do NOT throw if Firebase is not wanted.
+  // Example config (replace with yours):
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    databaseURL: "https://YOUR_PROJECT.firebaseio.com",
+    projectId: "YOUR_PROJECT",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "SENDER_ID",
+    appId: "APP_ID"
+  };
+
+  const placeholders = Object.values(firebaseConfig).some((v) => typeof v === 'string' && v.includes('YOUR_') || v.includes('YOUR_PROJECT'));
+
+  if (!placeholders) {
+    // Only import and initialize firebase if user replaced placeholders
+    // eslint-disable-next-line no-undef
+    // Note: these imports must exist in your project dependencies
+    const { initializeApp } = require('firebase/app');
+    const { getDatabase } = require('firebase/database');
+
+    const appFB = initializeApp(firebaseConfig);
+    db = getDatabase(appFB);
+    firebaseAvailable = true;
+  } else {
+    // placeholders present => skip Firebase initialization
+    firebaseAvailable = false;
+    db = null;
+    console.warn('Firebase placeholders detected — using localStorage fallback. Replace firebaseConfig with your project values to enable Firebase.');
+  }
+} catch (err) {
+  // If anything goes wrong, fall back to localStorage and avoid crashing the app
+  console.warn('Firebase init failed, falling back to localStorage. Error:', err && err.message ? err.message : err);
+  firebaseAvailable = false;
+  db = null;
+}
+
+// ==========================
+//   UTILS: Persistence (Firebase if available, otherwise localStorage)
+// ==========================
+const LS_KEYS = {
+  QUESTIONS: 'quiz_questions_v1',
+  LEADERBOARD: 'quiz_leaderboard_v1'
+};
+
+async function saveQuestionsPersist(questions) {
+  if (firebaseAvailable && db) {
+    // Implement Firebase saving logic here if desired
+    // Placeholder: return resolved promise for now
+    return Promise.resolve();
+  } else {
+    localStorage.setItem(LS_KEYS.QUESTIONS, JSON.stringify(questions));
+    return Promise.resolve();
+  }
+}
+
+async function loadQuestionsPersist() {
+  if (firebaseAvailable && db) {
+    // Implement Firebase loading logic here if desired
+    return Promise.resolve(defaultQuestions);
+  } else {
+    const raw = localStorage.getItem(LS_KEYS.QUESTIONS);
+    if (raw) {
+      try { return JSON.parse(raw); } catch { return defaultQuestions; }
+    }
+    return defaultQuestions;
+  }
+}
+
+async function saveLeaderboardPersist(leaderboard) {
+  if (firebaseAvailable && db) {
+    return Promise.resolve();
+  } else {
+    localStorage.setItem(LS_KEYS.LEADERBOARD, JSON.stringify(leaderboard));
+    return Promise.resolve();
+  }
+}
+
+async function loadLeaderboardPersist() {
+  if (firebaseAvailable && db) {
+    return Promise.resolve([]);
+  } else {
+    const raw = localStorage.getItem(LS_KEYS.LEADERBOARD);
+    if (raw) {
+      try { return JSON.parse(raw); } catch { return []; }
+    }
+    return [];
+  }
+}
+
+// ==========================
+//   MAIN COMPONENT
+// ==========================
+export default function QuizApp() {
+  // THEME
+  useEffect(() => {
+    // inject theme vars into document root for Tailwind or inline usage
+    Object.entries(themeStyle).forEach(([k, v]) => document.documentElement.style.setProperty(k, v));
+  }, []);
+
+  // ADMIN PANEL
+  const [adminMode, setAdminMode] = useState(false);
+  const [adminAuth, setAdminAuth] = useState(false);
+  const [adminLogin, setAdminLogin] = useState("");
+
+  // QUESTIONS
+  const [questionBank, setQuestionBank] = useState(defaultQuestions);
+  const [newQuestion, setNewQuestion] = useState({ question: "", options: ["", "", "", ""], answer: 0 });
+
+  // Load questions from persistence on mount
+  useEffect(() => {
+    let mounted = true;
+    loadQuestionsPersist().then((q) => { if (mounted) setQuestionBank(q); });
+    return () => { mounted = false; };
+  }, []);
+
+  const addQuestion = async () => {
+    const updated = [...questionBank, newQuestion];
+    setQuestionBank(updated);
+    setNewQuestion({ question: "", options: ["", "", "", ""], answer: 0 });
+    await saveQuestionsPersist(updated);
+  };
+
+  // USER LOGIN
+  const [username, setUsername] = useState("");
+  const [currentUser, setCurrentUser] = useState(null);
+
+  // QUIZ STATE
+  const [shuffledQuestions, setShuffledQuestions] = useState([]);
+  const [index, setIndex] = useState(0);
+  const [score, setScore] = useState(0);
+  const [showResult, setShowResult] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  // TIMER PER SOAL
+  const [time, setTime] = useState(10);
+
+  useEffect(() => {
+    if (!currentUser || showResult) return;
+
+    if (time > 0) {
+      const interval = setInterval(() => setTime((t) => t - 1), 1000);
+      return () => clearInterval(interval);
+    } else {
+      // user didn't answer in time; record as no answer (null) and proceed
+      setHistory((h) => [...h, { question: shuffledQuestions[index]?.question || '(kosong)', selected: null, correct: shuffledQuestions[index]?.answer ?? null }]);
+      nextQuestion();
+    }
+  }, [time, currentUser, showResult, index, shuffledQuestions]);
+
+  const startQuiz = () => {
+    const randomized = [...questionBank].sort(() => Math.random() - 0.5);
+    setShuffledQuestions(randomized);
+    setIndex(0);
+    setScore(0);
+    setTime(10);
+    setShowResult(false);
+    setCurrentUser(username);
+    setHistory([]);
+  };
+
+  const nextQuestion = () => {
+    if (index + 1 < shuffledQuestions.length) {
+      setIndex((i) => i + 1);
+      setTime(10);
+    } else {
+      setShowResult(true);
+    }
+  };
+
+  const handleAnswer = (i) => {
+    const correct = shuffledQuestions[index]?.answer ?? null;
+    setHistory((h) => [...h, { question: shuffledQuestions[index]?.question || '(kosong)', selected: i, correct }]);
+    if (i === correct) setScore((s) => s + 1);
+    nextQuestion();
+  };
+
+  // LEADERBOARD
+  const [leaderboard, setLeaderboard] = useState([]);
+
+  // load leaderboard on mount
+  useEffect(() => {
+    let mounted = true;
+    loadLeaderboardPersist().then((lb) => { if (mounted) setLeaderboard(lb); });
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    // when quiz finished, add to leaderboard and persist
+    if (showResult && currentUser) {
+      const updated = [...leaderboard, { name: currentUser, score }].sort((a, b) => b.score - a.score);
+      setLeaderboard(updated);
+      saveLeaderboardPersist(updated).catch((e) => console.warn('Failed to save leaderboard:', e));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showResult]);
+
+  // RENDER
+  return (
+    <div style={themeStyle} className="min-h-screen bg-[var(--geo-secondary)] flex items-center justify-center p-4">
+      <Card className="w-full max-w-2xl shadow-xl rounded-2xl p-6" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.9))' }}>
+        <CardContent>
+          {/* ADMIN BUTTON */}
+          <div className="flex justify-end mb-4">
+            {!adminAuth ? (
+              <Button variant="outline" onClick={() => setAdminMode(!adminMode)}>
+                {adminMode ? "Tutup Admin" : "Login Admin"}
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => { setAdminAuth(false); setAdminMode(false); }}>
+                Logout Admin
+              </Button>
+            )}
+          </div>
+
+          {/* ADMIN LOGIN */}
+          {adminMode && !adminAuth && (
+            <motion.div className="border p-4 rounded-xl mb-6 bg-white" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <h2 className="text-xl font-bold mb-3" style={{ color: 'var(--geo-primary)' }}>Login Admin (Guru)</h2>
+              <input
+                className="w-full p-2 border rounded mb-3"
+                type="password"
+                placeholder="Masukkan password admin"
+                value={adminLogin}
+                onChange={(e) => setAdminLogin(e.target.value)}
+              />
+              <Button
+                className="w-full"
+                onClick={() => {
+                  if (adminLogin === ADMIN_PASSWORD) {
+                    setAdminAuth(true);
+                  } else {
+                    alert('Password salah — hanya guru yang boleh masuk.');
+                  }
+                }}
+              >
+                Masuk Admin
+              </Button>
+            </motion.div>
+          )}
+
+          {/* ADMIN PANEL */}
+          {adminAuth && adminMode && (
+            <motion.div className="border p-4 rounded-xl mb-6 bg-white" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <h2 className="text-xl font-bold mb-4" style={{ color: 'var(--geo-primary)' }}>Admin Panel – Tambah Soal</h2>
+
+              <input
+                className="w-full p-2 border rounded mb-2"
+                placeholder="Pertanyaan"
+                value={newQuestion.question}
+                onChange={(e) => setNewQuestion({ ...newQuestion, question: e.target.value })}
+              />
+
+              {newQuestion.options.map((opt, i) => (
+                <input
+                  key={i}
+                  className="w-full p-2 border rounded mb-2"
+                  placeholder={`Opsi ${i + 1}`}
+                  value={opt}
+                  onChange={(e) => {
+                    const updated = [...newQuestion.options];
+                    updated[i] = e.target.value;
+                    setNewQuestion({ ...newQuestion, options: updated });
+                  }}
+                />
+              ))}
+
+              <select
+                className="w-full p-2 border rounded mb-3"
+                onChange={(e) => setNewQuestion({ ...newQuestion, answer: Number(e.target.value) })}
+                value={newQuestion.answer}
+              >
+                <option value={0}>Opsi 1</option>
+                <option value={1}>Opsi 2</option>
+                <option value={2}>Opsi 3</option>
+                <option value={3}>Opsi 4</option>
+              </select>
+
+              <Button className="w-full" onClick={addQuestion}>Tambahkan Soal</Button>
+            </motion.div>
+          )}
+
+          {/* USER LOGIN */}
+          {!currentUser && !adminMode && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <h1 className="text-2xl font-bold mb-4" style={{ color: 'var(--geo-primary)' }}>Masuk untuk mulai kuis</h1>
+              <input
+                className="w-full p-3 rounded-xl border mb-4"
+                placeholder="Masukkan nama kamu"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+              <Button className="w-full" onClick={startQuiz} disabled={!username.trim()}>Mulai</Button>
+            </motion.div>
+          )}
+
+          {/* MAIN QUIZ */}
+          {currentUser && !showResult && !adminMode && shuffledQuestions.length > 0 && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <div className="flex justify-between mb-4 text-lg font-semibold">
+                <span style={{ color: 'var(--geo-primary)' }}>Waktu: {time}s</span>
+                <span style={{ color: 'var(--geo-primary)' }}>Skor: {score}</span>
+              </div>
+
+              <h2 className="text-xl font-bold mb-4">{shuffledQuestions[index].question}</h2>
+
+              <div className="grid gap-3">
+                {shuffledQuestions[index].options.map((opt, i) => (
+                  <Button
+                    key={i}
+                    className="w-full text-left p-3"
+                    variant="secondary"
+                    onClick={() => handleAnswer(i)}
+                  >
+                    {opt}
+                  </Button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+
+          {/* HASIL LENGKAP + LEADERBOARD */}
+          {showResult && !adminMode && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <h1 className="text-3xl font-bold mb-4" style={{ color: 'var(--geo-primary)' }}>Hasil Kuis</h1>
+              <p className="text-lg mb-2">Nama: {currentUser}</p>
+              <p className="text-lg mb-4">Skor Akhir: {score} / {shuffledQuestions.length}</p>
+
+              <h2 className="text-xl font-bold mt-4 mb-2">Detail Jawaban</h2>
+              <ul className="mb-4 space-y-2">
+                {history.map((h, i) => (
+                  <li key={i} className="p-3 border rounded-lg bg-white">
+                    <strong>{h.question}</strong>
+                    <br />Jawabanmu: {h.selected === null ? "(tidak menjawab)" : (shuffledQuestions[i]?.options[h.selected] ?? '(kosong)')}
+                    <br />Jawaban benar: {shuffledQuestions[i]?.options[h.correct] ?? '(tidak tersedia)'}
+                  </li>
+                ))}
+              </ul>
+
+              <h2 className="text-xl font-bold mb-2">Leaderboard</h2>
+              <ul className="space-y-2 mb-4">
+                {leaderboard.map((e, i) => (
+                  <li key={i} className="p-2 border rounded bg-white flex justify-between">
+                    <span>{i + 1}. {e.name}</span>
+                    <span>{e.score}</span>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Button className="w-full" onClick={() => {
+                  // restart quiz with same question bank
+                  setCurrentUser(null);
+                  setShowResult(false);
+                  setShuffledQuestions([]);
+                }}>Selesai</Button>
+
+                <Button className="w-full" onClick={() => {
+                  // repeat quiz immediately
+                  startQuiz();
+                }}>Ulangi Kuis</Button>
+              </div>
+            </motion.div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
